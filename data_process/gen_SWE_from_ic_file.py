@@ -1,18 +1,7 @@
 """
-Dedalus script simulating the viscous shallow water equations on a sphere. This
-script demonstrates solving an initial value problem on the sphere. It can be
-ran serially or in parallel, and uses the built-in analysis framework to save
-data snapshots to HDF5 files. The `plot_sphere.py` script can be used to produce
-plots from the saved data. The simulation should about 5 cpu-minutes to run.
+Adapted from Dedalus SWE example: 
 
-The script implements the test case of a barotropically unstable mid-latitude
-jet from Galewsky et al. 2004 (https://doi.org/10.3402/tellusa.v56i5.14436).
-The initial height field balanced the imposed jet is solved with an LBVP.
-A perturbation is then added and the solution is evolved as an IVP.
-
-To run and plot using e.g. 4 processes:
-    $ mpiexec -n 4 python3 shallow_water.py
-    $ mpiexec -n 4 python3 plot_sphere.py snapshots/*.h5
+https://dedalus-project.readthedocs.io/en/latest/pages/examples/ivp_sphere_shallow_water.html
 """
 import os
 os.environ['OMP_NUM_THREADS'] = '1'
@@ -177,14 +166,6 @@ if __name__ == '__main__':
                                                   sim_dt=1*hour, max_writes=1*year)
     snapshots.add_tasks(solver.state, layout='g')
     snapshots.add_task(-d3.div(d3.skew(u)), name='vorticity')
-
-    ### Extras for debugging
-    # snapshots.add_task(uf, name='forcing')
-    # snapshots.add_task(hs, name='topography')
-    #
-    # snapshots.add_task(2*Omega*zcross(u), name='coriolis')
-    # snapshots.add_task(u@d3.Gradient(u), name='transport')
-    # snapshots.add_task(g*d3.Gradient(h), name='pressure')
 
     # CFL
     CFL = d3.CFL(solver, initial_dt=60*second, cadence=1, safety=1, threshold=0.05,

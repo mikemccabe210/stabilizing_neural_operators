@@ -44,15 +44,15 @@ full_field: &FULL_FIELD
   down_type: 'patch' # Options Fourier, FourierPatch, Patch
   up_type: 'patch' # Options Fourier, FourierPatch, Patch, FourierConv
   resample_type: 'fourierconv' # Options patch, fourierconv
-  train_data_path: '/pscratch/sd/j/jpathak/wind/train'
-  valid_data_path: '/pscratch/sd/j/jpathak/wind/test'
-  inf_data_path: '/pscratch/sd/j/jpathak/wind/out_of_sample' # test set path for inference
-  exp_dir: '/pscratch/sd/j/jpathak/ERA5_expts_gtc/wind'
-  min_path: '/pscratch/sd/j/jpathak/wind/mins.npy'
-  max_path: '/pscratch/sd/j/jpathak/wind/maxs.npy'
-  time_means_path:   '/pscratch/sd/j/jpathak/wind/time_means.npy'
-  global_means_path: '/pscratch/sd/j/jpathak/wind/global_means.npy'
-  global_stds_path:  '/pscratch/sd/j/jpathak/wind/global_stds.npy'
+  train_data_path: ''
+  valid_data_path: ''
+  inf_data_path: '' # test set path for inference
+  exp_dir: ''
+  min_path: ''
+  max_path: ''
+  time_means_path:   ''
+  global_means_path: ''
+  global_stds_path:  ''
 
   orography: !!bool False
   orography_path: None
@@ -85,15 +85,15 @@ afno_backbone: &backbone
   half_res_channels: [0, 1, 2, 3, 4, 19]
   orography: !!bool False
   orography_path: None 
-  exp_dir: '/pscratch/sd/m/mmccabe/results/era5_wind'
-  train_data_path: '/pscratch/sd/s/shas1693/data/era5/train'
-  valid_data_path: '/pscratch/sd/s/shas1693/data/era5/test'
-  inf_data_path: '/pscratch/sd/s/shas1693/data/era5/train'
-  min_path:        '/pscratch/sd/s/shas1693/data/era5/mins.npy'
-  max_path:        '/pscratch/sd/s/shas1693/data/era5/maxs.npy'
-  time_means_path:   '/pscratch/sd/s/shas1693/data/era5/new_stats/time_means.npy'
-  global_means_path: '/pscratch/sd/m/mmccabe/data/era5/global_means.npy'
-  global_stds_path:  '/pscratch/sd/m/mmccabe/data/era5/global_stds.npy'
+  exp_dir: ''
+  train_data_path: ''
+  valid_data_path: ''
+  inf_data_path: ''
+  min_path:        ''
+  max_path:        ''
+  time_means_path:   ''
+  global_means_path: ''
+  global_stds_path:  ''
   two_step_training: !!bool False
   pretrained: !!bool False
   weight_decay: 1e-6
@@ -128,59 +128,10 @@ afno_backbone: &backbone
   res_factor: 1.
 
 
-afno_swe: &swe
-  <<: *backbone
-  prediction_length: 300
-  img_size: [128, 256]
-  lr: 2e-3
-  weight_decay: 1e-4
-  fixed_step_norm: .5
-  res_factor: 1.1
-  batch_size: 64
-  max_epochs: 40
-  scheduler: 'CosineAnnealingLR'
-  in_channels: [0, 1 ,2]
-  out_channels: [0, 1 ,2]
-  v_channels: [1]
-  u_channels: [0]
-  exp_dir: '/pscratch/sd/m/mmccabe/results/swe'
-  train_data_path: '/pscratch/sd/m/mmccabe/data/swe/train'
-  valid_data_path: '/pscratch/sd/m/mmccabe/data/swe/test'
-  inf_data_path: '/pscratch/sd/m/mmccabe/data/swe/out_of_sample'
-  min_path:        '/pscratch/sd/m/mmccabe/data/swe/mins.npy'
-  max_path:        '/pscratch/sd/m/mmccabe/data/swe/maxs.npy'
-  time_means_path:   '/pscratch/sd/m/mmccabe/data/swe/time_means.npy'
-  global_means_path: '/pscratch/sd/m/mmccabe/data/swe/global_means.npy'
-  global_stds_path:  '/pscratch/sd/m/mmccabe/data/swe/global_stds.npy'
-  dc_path: '/pscratch/sd/m/mmccabe/data/swe/dc.h5'
-  steps_per_day: 24
-  steps_per_year: 1008
-  samples_per_year: 1008
-  max_grad_steps: 1
-  init_rollout_length: 1
-  diffusion_offset: 0
-  nettype: 'fno' # afno, fno, conv - eventually
-  # FNO specific 
-  mode_cut: 0
-  embed_cut: 64
-  fc_cut: 2
-  layers: [64, 64, 64, 64, 64]
-  modes1: [64, 64, 64, 64]
-  modes2: [128, 128, 128, 128]
-  fc_dim: 128
-  conv_type: 'depth_separable' # fno, depth_separable, ds_interp
-  conv_interp_type: 'bicubic' # fourier, bicubic, bilinear (technically anything in F.interpolate)
-  fno_emb: True
-  taper_poles: False
-  fno_residual: True
-  spectral_norm: True
-  dfs_type: 'full' # Options full, lite, sphere, none
-
-
 afno_backbone_orography: &backbone_orography 
   <<: *backbone
   orography: !!bool True
-  orography_path: '/pscratch/sd/s/shas1693/data/era5/static/orography.h5'
+  orography_path: '/orography.h5'
 
 afno_backbone_finetune: 
   <<: *backbone
@@ -190,41 +141,5 @@ afno_backbone_finetune:
   max_epochs: 50
   pretrained: !!bool True
   two_step_training: !!bool False
-  pretrained_ckpt_path: '/pscratch/sd/m/mmccabe/results/era5_wind/afno_backbone/Exp81_BiggerPatchFullSpectral/training_checkpoints/best_ckpt.tar'
-
-perturbations:
-  <<: *backbone
-  lr: 1E-4
-  batch_size: 64
-  max_epochs: 50
-  pretrained: !!bool True
-  two_step_training: !!bool True
-  pretrained_ckpt_path: '/pscratch/sd/j/jpathak/ERA5_expts_gtc/wind/afno_20ch_bs_64_lr5em4_blk_8_patch_8_cosine_sched/1/training_checkpoints/best_ckpt.tar'
-  prediction_length: 24
-  ics_type: "datetime"
-  n_perturbations: 100 
-  save_channel: !bool True
-  save_idx: 4
-  save_raw_forecasts: !!bool False
-  date_strings: ["2018-01-01 00:00:00"] 
-  inference_file_tag: " "
-  valid_data_path: "/pscratch/sd/j/jpathak/ "
-  perturb: !!bool True
-  n_level: 0.3
-
-### PRECIP ###
-precip: &precip
-  <<: *backbone
-  in_channels: [0, 1 ,2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-  out_channels: [0]
-  nettype: 'afno'
-  nettype_wind: 'afno'
-  log_to_wandb: !!bool True
-  lr: 2.5E-4
-  batch_size: 64
-  max_epochs: 25
-  precip: '/pscratch/sd/p/pharring/ERA5/precip/total_precipitation'
-  time_means_path_tp: '/pscratch/sd/p/pharring/ERA5/precip/total_precipitation/time_means.npy'
-  model_wind_path: '/pscratch/sd/s/shas1693/results/era5_wind/afno_backbone_finetune/0/training_checkpoints/best_ckpt.tar'
-  precip_eps: !!float 1e-5
+  pretrained_ckpt_path: '/best_ckpt.tar'
 

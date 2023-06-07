@@ -7,7 +7,7 @@ This is currently a work in progress and the included branch reflects the shallo
 
 ## Training:
 
-The config options (for all network types UNet, FNO) can be set in config/UNet.yaml. Example SWE and ERA5 configs can be bound in the config directory. Note
+The config options (for all network types AFNO, UNet, FNO, S2CNN, DeepSphere) can be set in the config file. Example SWE and ERA5 configs can be bound in the config directory. Note
 that the branch that built this repository was configured for SWE. ERA5 and Navier-Stokes compatibility will be added shortly.
 
 example training launch script for a single gpu job:
@@ -24,7 +24,7 @@ python inference/inference.py --config full_field --run_num 0
 ```
 The inference script will use the last saved checkpoint corresponding to the config and run number to generate trajectories from multiple initial conditions in the validation dataset
 
-The number of initial conditions and the length of the trajectories to be generated can be specified in the config/UNet.yaml file
+The number of initial conditions and the length of the trajectories to be generated can be specified in the config file
 
 ## Data
 
@@ -35,7 +35,7 @@ python data_process/gen_SWE_from_ic_file.py --ic_file=$ic_file --output_dir=$out
 ```
 Note that this was configured for running multiple processes in parallel through a third-party controller. The data must then be interpolated onto the correct grid:
 ```
-python data_process/fix_swe_data.py --
+python data_process/fix_swe_data.py --data_root=$data_root
 ```
 
 

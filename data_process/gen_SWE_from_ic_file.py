@@ -25,7 +25,7 @@ year = hour * 1008 # 42 day years - Chosen based on the fact that the sim gets b
 if __name__ == '__main__':
     # Parse IC file for PM xfer
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ic_file', default='/home/mike/Documents/Projects/shallow_water_gen/SWE_init.npy')
+    parser.add_argument('--ic_file', default='/home/Documents/Projects/shallow_water_gen/SWE_init.npy')
     parser.add_argument('--output_dir', default='.')
     args = parser.parse_args()
     ic_file = args.ic_file

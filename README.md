@@ -2,7 +2,7 @@
 
 Repository for paper "Towards Stability of Autoregressive Neural Operators". 
 
-This is currently a work in progress and the included branch reflects the shallow water experiments.
+This repo is currently a work in progress and the included branch reflects the shallow water experiments.
 
 
 ## Training:
@@ -20,7 +20,7 @@ python train.py --enable_amp --yaml_config=$config_file --config=$config --run_n
 
 example inference launch script for a single gpu job:
 ```
-python inference/inference.py --config full_field --run_num 0
+python inference/inference.py --config $config --run_num $run_num
 ```
 The inference script will use the last saved checkpoint corresponding to the config and run number to generate trajectories from multiple initial conditions in the validation dataset
 
@@ -28,7 +28,7 @@ The number of initial conditions and the length of the trajectories to be genera
 
 ## Data
 
-The rotating Shallow Water Equation system can be generated through the following process: Note that the full dataset once generated is ~300 GB. We include the IC samples which are randomly sampled values of Z500, U500, V500 from the ERA5 dataset in the data_stubs directory along with means/stds used for normalization. The split used is (0-24/25-27/28-30)[Dedalus3](https://github.com/DedalusProject/dedalus) must be installed to execute this code:
+The rotating Shallow Water Equation system can be generated through the following process: Note that the full dataset once generated is ~300 GB. We include the IC samples which are randomly sampled values of Z500, U500, V500 from the ERA5 dataset in the data_stubs directory along with means/stds used for normalization. The split used is (0-24/25-27/28-30). [Dedalus3](https://github.com/DedalusProject/dedalus) must be installed to execute this code as it is used to generate the data:
 
 ```
 python data_process/gen_SWE_from_ic_file.py --ic_file=$ic_file --output_dir=$output_dir

@@ -21,7 +21,7 @@ logging_utils.config_logger()
 from utils.YParams import YParams
 from utils.data_loader_multifiles import get_data_loader
 from utils.img_utils import sphere_to_torus_np, glide_reflection_np
-from networks.afnonet import AFNONet, sphere_to_torus, glide_reflection, torus_to_sphere, full_sphere_to_torus
+from sphere_tools import AFNONet, sphere_to_torus, glide_reflection, torus_to_sphere, full_sphere_to_torus
 from networks.FNO import fno
 import wandb
 from utils.plots import plot
@@ -88,9 +88,7 @@ def setup(params):
     params.stds = np.load(params.global_stds_path)[0, out_channels]
 
     # load the model
-    if params.nettype == 'afno':
-      model = AFNONet(params).to(device)
-    elif params.nettype == 'fno':
+    if params.nettype == 'fno':
         model = fno(params).to(device)
     else:
       raise Exception("not implemented")

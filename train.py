@@ -18,10 +18,9 @@ from utils import logging_utils
 logging_utils.config_logger()
 from utils.YParams import YParams
 from utils.data_loader_multifiles import get_data_loader
-from utils.opt_utils import AdamW, Shampoo
-from networks.afnonet import AFNONet, PrecipNet, FourierInterpFilter
+from projects.stabilizing_neural_operators.networks.sphere_tools import AFNONet, FourierInterpFilter
 from networks.FNO import fno
-from utils.img_utils import vis_precip, vis_swe
+from utils.img_utils import vis_swe
 import wandb
 from utils.weighted_acc_rmse import weighted_acc, weighted_rmse, weighted_rmse_torch,  unlog_tp_torch, weighted_rmse_torch_channels
 from apex import optimizers
@@ -61,88 +60,9 @@ swe_var_key_dict = {0: 'u',
         1: 'v',
         2: 'h'}
 
-def grad_clip(grad):
-    max_norm = 1 #TODO generalize this so we can alter the "trust region"
-    total_norm  = torch.norm(grad)
-    clip_coef = max_norm / (total_norm + 1e-6)
-    clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
-    return clip_coef_clamped * grad
-class DoubleLoss(nn.Module):
-    def forward(self, x):
-        return x, x
-
-class AliasLevelSplit(nn.Module):
-    def forward(self, x):
-        x=  torch.fft.rfft2(x)
-        outs = []
-        x = torch.fft.fftshift(x, dim=2)
-        for level in range(3, -1, -1):
-            res = torch.zeros_like(x)
-            res[:, :, 1440//2 - (1440//2**(level+1)):1440//2+(1440//2**(level+1)), :1440//2**level //2 +1] = x[:, :, 1440//2 - (1440//2**(level+1)):1440//2+(1440//2**(level+1)), :1440//2**level //2 +1]
-            for out in outs:
-                res = res - out
-            outs.append(res)
-        return tuple(torch.fft.irfft2(torch.fft.ifftshift(res, dim=2)) for res in outs)
-
-def rebalance_losses(m, grad_inputs, grad_outputs):
-    grad_norm1 = torch.linalg.norm(grad_outputs[0])
-    rescaled_gn1 = grad_outputs[0] / grad_norm1
-    out = rescaled_gn1.clone()
-    for i, grad in enumerate(grad_outputs[1:]):
-        grad = grad / torch.linalg.norm(grad)
-        proj = (out*grad).sum()
-        print(i, proj)
-        if proj < 0:
-            grad = grad - proj*out
-        out += grad
-        out /= torch.linalg.norm(out)
-    return (grad_norm1*out,)
-
-class RescaledMSE(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.loss = nn.MSELoss()
-        self.splitter = AliasLevelSplit()
-        self.splitter.register_full_backward_hook(rebalance_losses)
-        self.y_splitter = AliasLevelSplit()
-    def forward(self, x, y):
-        xs = self.splitter(x)
-        ys = self.y_splitter(y)
-        return sum([self.loss(x, y) for x, y in zip(xs, ys)])
-
-
-
-def scale_and_ortho(m, grad_inputs, grad_outputs):
-    grad1, grad2 = grad_outputs
-    #print('ginputs', [g.shape for g in grad_inputs])
-    #print(grad1.shape, grad2.shape)
-    g1_norm = torch.linalg.norm(grad1)
-    g2_norm = torch.linalg.norm(grad2)
-    grad1_new = grad1 / g1_norm
-    grad2_new = grad2 / g2_norm
-    proj = (grad1_new*grad2_new).sum()
-    print('proj!', proj, g1_norm, g2_norm)
-    if proj < 0:
-        grad2_new = grad2_new - proj*grad1_new
-    else:
-        grad2_new = grad2_new
-    grad2_new = grad2_new / torch.linalg.norm(grad2_new)
-    #print('out', grad1_new.shape, grad2_new.shape)
-    return (g1_norm*(grad1_new + grad2_new),)
-
-class RSpectralLoss():
-    def __call__(self, x, y):
-        yfft = torch.fft.rfft2(y, norm='ortho')
-        xfft = torch.fft.rfft2(x, norm='ortho')
-        return ((yfft - xfft).abs()**2 / (yfft.abs()+1e-10)**2).mean()
-        
 class Trainer():
   def count_parameters(self):
     return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-
-  @torch.no_grad()
-  def downsample_data(self, x, y, scale_factor=2.):
-      return F.interpolate(x, mode='bicubic', scale_factor=scale_factor), F.interpolate(y, mode='bicubic', scale_factor=scale_factor)
 
   def add_weight_decay(self, weight_decay=1e-5, inner_lr=1e-3, skip_list=()):
     """ From Ross Wightman at:
@@ -173,93 +93,34 @@ class Trainer():
     self.world_rank = world_rank
     self.device = torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'
 
-    #if params.log_to_wandb:
-    #  if self.sweep_id:
-    #      wandb.init(dir=params.experiment_dir)
-    #      print('what about here')
-    #      hpo_config = wandb.config
-    #      self.params.update_params(hpo_config)
-    #      print('GOT HEREEEEEEEEEEEEEEEEEE')
-    #  else:
-    #    wandb.init(dir=params.experiment_dir, config=params, name=params.name, group=params.group, project=params.project, entity=params.entity, resume=True)
-
     logging.info('rank %d, begin data loader init'%world_rank)
-    self.loss_obj = nn.MSELoss()# LpLoss()
+    self.loss_obj = nn.MSELoss()
     self.valid_obj = LpLoss()
-    self.freq_obj = RSpectralLoss()
-    self.doubler = DoubleLoss()
-    self.doubler.register_full_backward_hook(scale_and_ortho)
-    # precip models
-    self.precip = True if "precip" in params else False
   
   def setup_model(self, params): 
-    print('beginning of setup')
-    if self.precip:
-      if 'model_wind_path' not in params:
-        raise Exception("no backbone model weights specified")
-      # load a wind model 
-      # the wind model has out channels = in channels
-      out_channels = np.array(params['in_channels'])
-      params['N_out_channels'] = len(out_channels)
-
-      if params.nettype_wind == 'afno':
-        self.model_wind = AFNONet(params).to(self.device)
-      else:
-        raise Exception("not implemented")
-
-      if dist.is_initialized():
-        self.model_wind = DistributedDataParallel(self.model_wind,
-                                            device_ids=[params.local_rank],
-                                            output_device=[params.local_rank],find_unused_parameters=True)
-      self.load_model_wind(params.model_wind_path)
-      self.switch_off_grad(self.model_wind) # no backprop through the wind model
-
-    # reset out_channels for precip models
-    if self.precip:
-      params['N_out_channels'] = len(params['out_channels'])
-    print('pre_model!')
-    if params.nettype == 'afno':
-      self.model = AFNONet(params).to(self.device) 
-    elif params.nettype == 'fno':
+    if params.nettype == 'fno':
       self.model = fno(params).to(self.device)
     else:
       raise Exception("not implemented")
-     
-    # precip model
-    if self.precip:
-      self.model = PrecipNet(params, backbone=self.model).to(self.device)
 
     if self.params.enable_nhwc:
       # NHWC: Convert model to channels_last memory format
       self.model = self.model.to(memory_format=torch.channels_last)
 
-    #if params.log_to_wandb:
-    #  wandb.watch(self.model)
     if params.weight_decay >= 0:
-        if 'FS' in params.optimizer_type:
-            model_params = self.add_weight_decay(params.weight_decay, params.fixed_step_norm)
-        else:
-            model_params = self.add_weight_decay(params.weight_decay, params.lr)
+        model_params = self.add_weight_decay(params.weight_decay, params.lr)
     else:
         model_params = self.model.parameters()
 
-    if params.optimizer_type == 'FusedAdam':
+    if params.optimizer_type == 'FusedLAMB':
         max_gnorm = (.1*sum([p.numel() for p in self.model.parameters()]))**.5 # Want the constraint, but don't want the numerical issues
-        print(max_gnorm)
         self.optimizer = optimizers.FusedLAMB(model_params, lr = params.lr, 
-                #betas=(.5, .6),
                 weight_decay=params.weight_decay, max_grad_norm=max_gnorm, eps=1e-14)
     else:
-      self.optimizer = torch.optim.Adam(model_params, lr = params.lr, weight_decay=params.weight_decay)
-      #self.optimizer = AdamW(model_params, lr=params.lr, weight_decay=params.weight_decay)
+      self.optimizer = torch.optim.AdamW(model_params, lr = params.lr, weight_decay=params.weight_decay)
     if params.enable_amp == True:
       self.gscaler = amp.GradScaler()
 
-#    self.hook_handles = []
-#    for name, p in self.model.named_parameters():
-#        print(name)
-#        h = p.register_hook(lambda x: grad_clip(x))
-#        self.hook_handles.append(h)
     self.iters = 0
     self.startEpoch = 0
     if params.resuming:
@@ -270,26 +131,12 @@ class Trainer():
       self.restore_checkpoint(params.pretrained_ckpt_path)
       self.iters = 0
       self.startEpoch = 0
-        #logging.info("Pretrained checkpoint was trained for %d epochs"%self.startEpoch)
-        #logging.info("Adding %d epochs specified in config file for refining pretrained model"%self.params.max_epochs)
-        #self.params.max_epochs += self.startEpoch
-    if params.upscale and params.rescale_factor > 1:
-        if params.resuming is False:
-            logging.info("Starting from pretrained one-step afno model at %s" % params.old_checkpoint_path)
-            self.restore_checkpoint(params.old_checkpoint_path)
-            self.iters = 0
-            self.startEpoch = 0
-            self.model.resize((self.model.img_size[0]*params.rescale_factor, self.model.img_size[1]*params.rescale_factor))
     if dist.is_initialized():
       self.model = DistributedDataParallel(self.model,
                                            device_ids=[params.local_rank],
                                            output_device=[params.local_rank],find_unused_parameters=True,
                                            broadcast_buffers=False)
-    # Bisection would be faster, but i don't think this is long enough to matter?
-    for milestone in self.params.rollout_milestones:
-      if self.startEpoch >= milestone:
-        self.params['rollout_length'] += 1
-        self.rollout_milestones.pop(0)
+    
     logging.info('rank %d, begin data loader init'%world_rank)
     self.train_data_loader, self.train_dataset, self.train_sampler = get_data_loader(params, params.train_data_path, dist.is_initialized(), train=True)
     self.valid_data_loader, self.valid_dataset = get_data_loader(params, params.valid_data_path, dist.is_initialized(), train=False)
@@ -332,11 +179,9 @@ class Trainer():
     if self.params.log_to_wandb:
       if self.sweep_id:
           wandb.init(dir=params.experiment_dir)
-          print('what about here')
           hpo_config = wandb.config.as_dict()
           self.params.update_params(hpo_config)
           params = self.params
-          print('GOT HEREEEEEEEEEEEEEEEEEE')
       else:
         wandb.init(dir=params.experiment_dir, config=params, name=params.name, group=params.group, project=params.project, entity=params.entity, resume=True)
     if self.sweep_id and dist.is_initialized():
@@ -349,9 +194,6 @@ class Trainer():
         hpo_config = comm.bcast(hpo_config, root=0)
         self.params.update_params(hpo_config)
         params = self.params
-        #self.params = comm.bcast(self.params, root=0)
-        #self.params.device = self.device # dont broadcast 0s device
-        #self.params.log_to_wandb = (self.params.log_to_wandb and self.world_rank == 0)
 
     self.setup_model(self.params)
     if self.params.log_to_wandb:
@@ -359,21 +201,9 @@ class Trainer():
 
     if self.params.log_to_screen:
       logging.info("Starting Training Loop...")
-    #for ln in self.model.module.lns:
-    #    ln.nu2.requires_grad = False
-    #    ln.nu.requires_grad = False
-    self.model.module.diffusion.nu.requires_grad = False
-    self.model.module.diffusion.nu2.requires_grad = False
 
     best_valid_loss = 1.e6
     for epoch in range(self.startEpoch, self.params.max_epochs):
-      if epoch >= 5:
-      #  for ln in self.model.module.lns:
-       #     ln.nu2.requires_grad = True
-        #    ln.nu.requires_grad = True
-        self.model.module.diffusion.nu.requires_grad = True
-        self.model.module.diffusion.nu2.requires_grad = True
-
       # Check if we need to increase rollout length based on provided milestones
       if len(self.rollout_milestones) > 0:
         if epoch >= self.rollout_milestones[0]:
@@ -396,13 +226,6 @@ class Trainer():
 
 
       post_start = time.time()
-#      if self.params.scheduler == 'ReduceLROnPlateau':
-#        self.scheduler.step(valid_logs['valid_loss'])
-#      elif self.params.scheduler == 'CosineAnnealingLR':
-#        self.scheduler.step()
-#        if self.epoch >= self.params.max_epochs:
-#          logging.info("Terminating training after reaching params.max_epochs while LR scheduler is set to CosineAnnealingLR")
-#          exit()
       if self.params.log_to_wandb:
         for pg in self.optimizer.param_groups:
           lr = pg['lr']
@@ -421,37 +244,20 @@ class Trainer():
       print('Time for train {}. For valid: {}. For postprocessing:{}'.format(valid_start-start, post_start-valid_start, cur_time-post_start))
       if self.params.log_to_screen:
         logging.info('Time taken for epoch {} is {} sec'.format(epoch + 1, time.time()-start))
-        #logging.info('train data time={}, train step time={}, valid step time={}'.format(data_time, tr_time, valid_time))
         logging.info('Train loss: {}. Valid loss: {}'.format(train_logs['loss'], valid_logs['valid_loss']))
-#        if epoch==self.params.max_epochs-1 and self.params.prediction_type == 'direct':
-#          logging.info('Final Valid RMSE: Z500- {}. T850- {}, 2m_T- {}'.format(valid_weighted_rmse[0], valid_weighted_rmse[1], valid_weighted_rmse[2]))
-
-
 
   def train_one_epoch(self):
     self.epoch += 1
     tr_time = 0
     data_time = 0
     last_step_time = None
-    last_step_end = None
     self.model.train()
-    last_step = None
-    last_step_mag = None
-    step_logs = []
-    last_mags = [None]*4
     dtype = torch.float
     self.model = self.model.to(dtype)
     torch.set_printoptions(edgeitems=5)
     seed = torch.Generator() # This is on CPU 
     seed.manual_seed(1337*self.epoch) # Doesn't really matter since batches are random, but want all devices using same rollout for efficiency 
     for i, data in enumerate(self.train_data_loader, 0):
-      #if self.world_rank==0:
-         # for j, conv in enumerate(self.model.module.sp_convs):
-          #    if last_mags[j] is not None:
-           #     diff = (conv.ew_mags - last_mags[j]).abs()
-            #    diff = rearrange(diff, 'b h w c -> h w (b c)')
-             #   print('conv diff',  j,torch.median(diff, dim=-1).values[50:60])
-             # last_mags[j] = conv.ew_mags.clone()
 
       with torch.no_grad():
         if self.params.rollout_length > self.params.max_grad_steps:
@@ -461,7 +267,6 @@ class Trainer():
           ps = torch.ones(self.params.rollout_length)
           bp_steps = torch.arange(self.params.rollout_length, device=self.device)
       self.iters += 1
-      # adjust_LR(optimizer, params, iters)
       data_start = time.time()
 
       augs = data[-1]
@@ -470,15 +275,9 @@ class Trainer():
 
       inp, tar, year_idx, local_idx = map(lambda x: x.to(self.device, dtype = dtype), data)      
       
-      #if self.params.grid_res != 'full':
-      #    inp = self.clip(inp)
-      #    tar = self.clip(tar)
       
       if self.params.orography and self.params.rollout_length > 1:
         orog = inp[:,-2:-1]
-
-      #if params.scale_factor != 1:
-      #  inp, tar = self.downsample_data(inp, tar, scale_factor=self.params.scale_factor * self.params.rescale_factor)
 
       if self.params.enable_nhwc:
         inp = inp.to(memory_format=torch.channels_last)
@@ -495,20 +294,13 @@ class Trainer():
 
       self.model.zero_grad()
       with amp.autocast(self.params.enable_amp):
-        if self.precip: # use a wind model to predict 17(+n) channels at t+dt
-          with torch.no_grad():
-            inp = self.model_wind(inp).to(self.device, dtype = torch.float)
-          gen = self.model(inp.detach(), local_idx, augs).to(self.device, dtype = torch.float)
-          loss = self.loss_obj(gen, tar)
+        if False:
+           pass
         else:
           # Check if we're bping through the first example
           with torch.set_grad_enabled(torch.isin(0, bp_steps, assume_unique=True).item()):
             gen = self.model(inp, local_idx, augs, extra_out=True).to(self.device, dtype = dtype)
-            #gen, gen2 = self.doubler(gen)
             first_loss = self.loss_obj(gen, tar[:,0:self.params.N_out_channels])
-            #freq_loss = self.freq_obj(gen, tar[:,0:self.params.N_out_channels])
-            #print('Losses', first_loss, freq_loss)
-            # first_loss += freq_loss
           with torch.no_grad():
             l1_loss = nn.functional.l1_loss(gen, tar[:,0:self.params.N_out_channels])
           loss = first_loss
@@ -534,53 +326,12 @@ class Trainer():
       if self.params.enable_amp:
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
-        #self.gscaler.unscale_(self.optimizer)
-        """ # Some debugging tools for the optimizer - not really needed anymore
-        old_params = []
-        cur_grad_norm = 0
-        step_mag = 0
-        with torch.no_grad():
-            for k, g in enumerate(self.optimizer.param_groups):
-                op = []
-                for j, p in enumerate(g['params']):
-                    if p.grad is not None:
-                        op.append(p.detach().clone())
-                        cur_grad_norm += (p.grad**2).sum()
-                    else:
-                        op.append(None)
-                old_params.append(op)
-            cur_grad_norm = cur_grad_norm**.5
-        self.gscaler.step(self.optimizer)
-        last_step = []
-        with torch.no_grad():
-            for k, g in enumerate(self.optimizer.param_groups):
-                ls = []
-                for j, p in enumerate(g['params']):
-                    if p.grad is not None:
-                        diff =  p.detach() - old_params[k][j]
-                        step_mag += (diff**2).sum()
-                        last_step.append(diff)
-                    else:
-                        last_step.append(None)
-            step_mag = step_mag ** .5
-            last_step_mag = step_mag.clone()
-            log_things = {'train_grad_norm': cur_grad_norm, 'train_laststep_size': step_mag}
-        
-           # for key in log_things:
-            #    dist.all_reduce(log_things[key].detach(), op=dist.ReduceOp.AVG)
-                # log_things[key] = log_things[key].detach().cpu().item()
-        """
         print('Epoch', self.epoch, i, year_idx[0].item(), local_idx[0].item(), local_idx[0].item() % 4, 'loss', loss.item(), bp_steps)
       # wandb.log(log_things)
       else:
         loss.backward()
         self.optimizer.step()
-            #1_pen += conv.mags.abs().mean()
       # L1 prox on spectral mags
-      for j, (name, p) in enumerate(self.model.module.named_parameters()):
-        with torch.no_grad():
-            if 'mags' in name:
-                pass#p.copy_(F.softshrink(p, self.optimizer.param_groups[2]['lr']*1e-3))
       print('Epoch', self.epoch, i, year_idx[0].item(), local_idx[0].item(), local_idx[0].item() % 4, 'loss', loss.item(), bp_steps)
       if self.params.enable_amp:
         self.gscaler.update()
@@ -593,8 +344,7 @@ class Trainer():
           print('full step', time.time() - last_step_time)
           print('model time', time.time() - tr_start)
       last_step_time = time.time()
-      #if i > 10:
-      #  break
+
     try:
         logs = {'loss': loss / min(params.rollout_length, params.max_grad_steps),
                 'train_l1': l1_loss}
@@ -653,7 +403,7 @@ class Trainer():
       sample_idx = np.random.randint(n_valid_batches)
       with torch.no_grad():
           for i, data in enumerate(valid_data_loader, 0):
-              if (not self.precip) and i >= n_valid_batches:
+              if i >= n_valid_batches:
                   break
               augs = data[-1]
               augs = None # Broke augs to speed things up since it didnt seem to help anyway
@@ -662,58 +412,31 @@ class Trainer():
               if self.params.orography and self.params.rollout_length > 1: # this looks wrong, but not using orography, so not debugging atm
                   orog = inp[:, -2:-1]
 
-              inp, dtar = self.downsample_data(inp, tar,
-                                               scale_factor=self.params.scale_factor * self.params.rescale_factor)
-              if self.precip:
-                  with torch.no_grad():
-                      inp = self.model_wind(inp).to(self.device, dtype=torch.float)
-                  gen = self.model(inp.detach(), local_idx, augs)
-                  valid_loss += self.valid_obj(gen, tar)
-                  valid_l1 += nn.functional.l1_loss(gen, tar)
-              else:
-                  gen = self.model(inp, local_idx, augs).to(self.device, dtype=torch.float)
-                  gen, _ = self.downsample_data(gen, dtar, scale_factor=1 / (
-                              self.params.scale_factor * self.params.rescale_factor))
-                  sample_loss = self.valid_obj(gen, tar[:, 0:self.params.N_out_channels])
-                  valid_loss += sample_loss
-                  step_losses[0] += sample_loss
-                  valid_l1 += nn.functional.l1_loss(gen, tar[:, 0:self.params.N_out_channels])
-                  valid_weighted_rmse += weighted_rmse_torch(gen, tar[:, 0 * self.params.N_out_channels:(0 + 1) * self.params.N_out_channels])
+              inp, dtar = inp, tar
+              gen = self.model(inp, local_idx, augs).to(self.device, dtype=torch.float)
+              gen, _ = self.downsample_data(gen, dtar, scale_factor=1 / (
+                          self.params.scale_factor * self.params.rescale_factor))
+              sample_loss = self.valid_obj(gen, tar[:, 0:self.params.N_out_channels])
+              valid_loss += sample_loss
+              step_losses[0] += sample_loss
+              valid_l1 += nn.functional.l1_loss(gen, tar[:, 0:self.params.N_out_channels])
+              valid_weighted_rmse += weighted_rmse_torch(gen, tar[:, 0 * self.params.N_out_channels:(0 + 1) * self.params.N_out_channels])
+              valid_steps += 1.
+              for step in range(1, valid_rollout_length):
+                  if self.params.orography:
+                      gen = torch.cat((gen, orog), axis=1)
+                  local_idx = local_idx + 1
+                  gen = self.model(gen, local_idx, augs).to(self.device, dtype=torch.float)
+                  new_loss = self.valid_obj(gen, tar[:, step * self.params.N_out_channels:(
+                                                                                                      step + 1) * self.params.N_out_channels])
+                  step_losses[step] += new_loss
+                  valid_loss += new_loss
+                  valid_l1 += nn.functional.l1_loss(gen, tar[:, step * self.params.N_out_channels:(step + 1) * self.params.N_out_channels])
+                  valid_weighted_rmse += weighted_rmse_torch(gen, tar[:, step * self.params.N_out_channels:(step + 1) * self.params.N_out_channels])
                   valid_steps += 1.
-                  for step in range(1, valid_rollout_length):
-                      if self.params.orography:
-                          gen = torch.cat((gen, orog), axis=1)
-                      local_idx = local_idx + 1
-                      gen = self.model(gen, local_idx, augs).to(self.device, dtype=torch.float)
-                      new_loss = self.valid_obj(gen, tar[:, step * self.params.N_out_channels:(
-                                                                                                         step + 1) * self.params.N_out_channels])
-                      step_losses[step] += new_loss
-                      valid_loss += new_loss
-                      valid_l1 += nn.functional.l1_loss(gen, tar[:, step * self.params.N_out_channels:(step + 1) * self.params.N_out_channels])
-                      valid_weighted_rmse += weighted_rmse_torch(gen, tar[:, step * self.params.N_out_channels:(step + 1) * self.params.N_out_channels])
-                      valid_steps += 1.
               # save fields for vis before log norm
-              if (i == sample_idx):
-                  if (self.precip and self.params.log_to_wandb):
-                    fields = [gen[0, 0].detach().cpu().numpy(), tar[0, 0].detach().cpu().numpy()]
-                  elif len(prefix) > 0:
+              if i == sample_idx and len(prefix) > 0:
                       fields = [gen[0].detach().cpu().numpy(), tar[0].detach().cpu().numpy()]
-              if self.precip:
-                  gen = unlog_tp_torch(gen, self.params.precip_eps)
-                  tar = unlog_tp_torch(tar, self.params.precip_eps)
-
-
-
-              # if not self.precip:
-              #     try:
-              #         os.mkdir(params['experiment_dir'] + "/" + str(i))
-              #     except:
-              #         pass
-              #     # save first channel of last image
-              #     save_image(torch.cat((gen[0, 0], torch.zeros((self.valid_dataset.img_shape_x, 4)).to(self.device,
-              #                                                                                          dtype=torch.float),
-              #                           tar[0, 0]), axis=1),
-              #                params['experiment_dir'] + "/" + str(i) + "/" + str(self.epoch) + ".png")
 
           # Do one batch power iteration on noise
           noise = torch.randn_like(inp)
@@ -722,7 +445,6 @@ class Trainer():
 
           indist_power_iter = self.model(inp, local_idx, augs)
           indist_op_est = torch.linalg.norm(indist_power_iter) / torch.linalg.norm(inp)
-          #twostep_op_est = torch.linalg.norm(self.model(indist_power_iter, local_idx, augs)) / torch.linalg.norm(indist_power_iter)
 
       if dist.is_initialized():
           dist.all_reduce(valid_buff)
@@ -730,14 +452,12 @@ class Trainer():
           dist.all_reduce(step_losses)
           dist.all_reduce(noise_op_est, op=dist.ReduceOp.AVG)
           dist.all_reduce(indist_op_est, op=dist.ReduceOp.AVG)
-       #   dist.all_reduce(twostep_op_est, op=dist.ReduceOp.AVG)
       # divide by number of steps
       valid_buff[0:2] = valid_buff[0:2] / valid_buff[2]
       valid_weighted_rmse = valid_weighted_rmse / valid_buff[2]
       step_losses = step_losses / valid_buff[2]
 
-      if not self.precip:
-          valid_weighted_rmse *= mult
+      valid_weighted_rmse *= mult
 
       # download buffers
       valid_buff_cpu = valid_buff.detach().cpu().numpy()
@@ -750,27 +470,17 @@ class Trainer():
           step_logs = {}
       valid_time = time.time() - valid_start
       loss_logs = {(prefix+'valid_rmse_' + k): valid_weighted_rmse_cpu[i] for i, k in var_key_dict.items()}
-      # valid_weighted_rmse = mult*torch.mean(valid_weighted_rmse, axis = 0)
-      if self.precip:
-          logs = {'valid_l1': valid_buff_cpu[1], 'valid_loss': valid_buff_cpu[0],
-                  'valid_rmse_tp': valid_weighted_rmse_cpu[0],
+      try:
+          logs = {prefix+'valid_l1': valid_buff_cpu[1] ,
+                  prefix+'valid_loss': valid_buff_cpu[0] ,
                   'noise_op_est': noise_op_est, 'data_op_est': indist_op_est, }
-      else:
-          try:
-              logs = {prefix+'valid_l1': valid_buff_cpu[1] ,
-                      prefix+'valid_loss': valid_buff_cpu[0] ,
-                      'noise_op_est': noise_op_est, 'data_op_est': indist_op_est, }
-          except:
-              logs = {prefix+'valid_l1': valid_buff_cpu[1], prefix+'valid_loss': valid_buff_cpu[0],
-                      'noise_op_est': noise_op_est, 'data_op_est': indist_op_est, }
+      except:
+          logs = {prefix+'valid_l1': valid_buff_cpu[1], prefix+'valid_loss': valid_buff_cpu[0],
+                  'noise_op_est': noise_op_est, 'data_op_est': indist_op_est, }
       logs.update(step_logs)
       logs.update(loss_logs)
       if self.params.log_to_wandb:
-          if self.precip:
-              fig = vis_precip(fields)
-              logs['vis'] = wandb.Image(fig)
-              plt.close(fig)
-          elif len(prefix)>0:
+          if len(prefix)>0:
               fig = vis_swe(fields)
               logs['vis'] = wandb.Image(fig)
               plt.close(fig)
@@ -779,79 +489,6 @@ class Trainer():
       if len(prefix) > 0:
           logs['valid_loss'] = logs[prefix+'valid_loss']
       return valid_time, logs
-
-  def validate_final(self):
-    self.model.eval()
-    n_valid_batches = int(self.valid_dataset.n_patches_total/self.valid_dataset.n_patches) #validate on whole dataset
-    valid_weighted_rmse = torch.zeros(n_valid_batches, self.params.N_out_channels)
-    if self.params.normalization == 'minmax':
-        torch.as_tensor(mult = np.load(self.params.max_path)[0, self.params.out_channels, 0, 0] - np.load(self.params.min_path)[0, self.params.out_channels, 0, 0]).to(self.device)
-    elif self.params.normalization == 'zscore':
-        mult = torch.as_tensor(np.load(self.params.global_stds_path)[0, self.params.out_channels, 0, 0]).to(self.device)
-
-    with torch.no_grad():
-        for i, data in enumerate(self.valid_data_loader):
-          if i>100:
-            break
-          inp, tar = map(lambda x: x.to(self.device, dtype = torch.float), data)
-          if self.params.orography and self.params.two_step_training:
-              orog = inp[:,-2:-1]
-          if 'residual_field' in self.params.target:
-            tar -= inp[:, 0:tar.size()[1]]
-
-        if self.params.two_step_training:
-            gen_step_one = self.model(inp).to(self.device, dtype = torch.float)
-            loss_step_one = self.loss_obj(gen_step_one, tar[:,0:self.params.N_out_channels])
-
-            if self.params.orography:
-                gen_step_two = self.model(torch.cat( (gen_step_one, orog), axis = 1)  ).to(self.device, dtype = torch.float)
-            else:
-                gen_step_two = self.model(gen_step_one).to(self.device, dtype = torch.float)
-
-            loss_step_two = self.loss_obj(gen_step_two, tar[:,self.params.N_out_channels:2*self.params.N_out_channels])
-            valid_loss[i] = loss_step_one + loss_step_two
-            valid_l1[i] = nn.functional.l1_loss(gen_step_one, tar[:,0:self.params.N_out_channels])
-        else:
-            gen = self.model(inp)
-            valid_loss[i] += self.loss_obj(gen, tar) 
-            valid_l1[i] += nn.functional.l1_loss(gen, tar)
-
-        if self.params.two_step_training:
-            for c in range(self.params.N_out_channels):
-              if 'residual_field' in self.params.target:
-                valid_weighted_rmse[i, c] = weighted_rmse_torch((gen_step_one[0,c] + inp[0,c]), (tar[0,c]+inp[0,c]), self.device)
-              else:
-                valid_weighted_rmse[i, c] = weighted_rmse_torch(gen_step_one[0,c], tar[0,c], self.device)
-        else:
-            for c in range(self.params.N_out_channels):
-              if 'residual_field' in self.params.target:
-                valid_weighted_rmse[i, c] = weighted_rmse_torch((gen[0,c] + inp[0,c]), (tar[0,c]+inp[0,c]), self.device)
-              else:
-                valid_weighted_rmse[i, c] = weighted_rmse_torch(gen[0,c], tar[0,c], self.device)
-            
-        #un-normalize
-        valid_weighted_rmse = mult*torch.mean(valid_weighted_rmse[0:100], axis = 0).to(self.device)
-
-    return valid_weighted_rmse
-
-
-  def load_model_wind(self, model_path):
-    if self.params.log_to_screen:
-      logging.info('Loading the wind model weights from {}'.format(model_path))
-    checkpoint = torch.load(model_path, map_location='cuda:{}'.format(self.params.local_rank))
-    if dist.is_initialized():
-      self.model_wind.load_state_dict(checkpoint['model_state'])
-    else:
-      new_model_state = OrderedDict()
-      model_key = 'model_state' if 'model_state' in checkpoint else 'state_dict'
-      for key in checkpoint[model_key].keys():
-          if 'module.' in key: # model was stored using ddp which prepends module
-              name = str(key[7:])
-              new_model_state[name] = checkpoint[model_key][key]
-          else:
-              new_model_state[key] = checkpoint[model_key][key]
-      self.model_wind.load_state_dict(new_model_state)
-      self.model_wind.eval()
 
   def save_checkpoint(self, checkpoint_path, model=None):
     """ We intentionally require a checkpoint_dir to be passed
@@ -924,7 +561,6 @@ if __name__ == '__main__':
   else:
     expDir = os.path.join(params.exp_dir, args.config, str(args.run_num))
 
-  #expDir = os.path.join(params.exp_dir, args.config, str(args.run_num))
   params['old_exp_dir'] = expDir
   # I did this pretty much the worst way possible. Please fix it.
   if params.upscale:

@@ -3,12 +3,12 @@ import torch
 import numpy as np
 import torch.nn as nn
 try:
-    from .fno_utils import SpectralConv2dV2, _get_act, DSConvSpectral, DSConvSpectralFNO, DSConvReducedSpectral, SpectralLN, Diffusion2d, DSConvSpectral2d, DFSEmbedding
-    from .afnonet import sphere_to_torus, glide_reflection, ContSphereEmbedding
+    from .fno_utils import SpectralConv2dV2, _get_act, DSConvSpectral, DSConvSpectralFNO, DSConvReducedSpectral, SpectralLN, DSConvSpectral2d, DFSEmbedding
+    from .sphere_tools import sphere_to_torus, glide_reflection, ContSphereEmbedding
     from .spectral_norm_utils import spectral_norm
 except:
-    from fno_utils import SpectralConv2dV2, _get_act, DSConvSpectral, DSConvSpectralFNO, DSConvReducedSpectral, SpectralLN, Diffusion2d, DSConvSpectral2d, DFSEmbedding
-    from afnonet import sphere_to_torus, glide_reflection, ContSphereEmbedding
+    from fno_utils import SpectralConv2dV2, _get_act, DSConvSpectral, DSConvSpectralFNO, DSConvReducedSpectral, SpectralLN, DSConvSpectral2d, DFSEmbedding
+    from projects.stabilizing_neural_operators.networks.sphere_tools import sphere_to_torus, glide_reflection, ContSphereEmbedding
     from spectral_norm_utils import spectral_norm
 
 class FNN2d(nn.Module):
@@ -96,7 +96,6 @@ class FNN2d(nn.Module):
         self.mean_constraint = mean_constraint
         self.taper_poles = taper_poles
         self.use_embedding = use_embedding
-        self.diffusion = Diffusion2d(out_dim, diffusion_offset=diffusion_offset)
         if self.taper_poles:
             nlats = grid_size[0]
             delta = 1 / (nlats+1) / 2
@@ -212,7 +211,6 @@ class FNN2d(nn.Module):
             else:
                 x = torch.fft.irfft2(x.cdouble(), norm='ortho', dim=(-2, -1)).to(dtype)
 
-        x = self.diffusion(x)
 
         if self.dfs_type == 'full':
             x_stt = glide_reflection(x[:, :, x.shape[2]//2:])

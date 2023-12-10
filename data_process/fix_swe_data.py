@@ -75,11 +75,11 @@ def process_files(args):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--output_dir', default='.')
+    parser.add_argument('--data_root', default='.')
     args = parser.parse_args()
     ic_file = args.ic_file
 
-    file_path = parser.output_dir 
+    file_path = parser.data_root 
     files = glob.glob(file_path + '/*.h5')
     files = [f for f in files if f.split('/')[-1] not in bad_sims]
 

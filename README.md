@@ -7,12 +7,16 @@ limiting their use for long-term, high resolution forecasts. Today, these stabil
 resolution. This is essentially equivalent to solving at reduced spatial resolution and resampling the underlying basis functions. We explore
 methods to address this without sacrificing resolution. 
 
-![In our spherical shallow water experiments, we show that improved geometry handling is insufficient for ensuring stability](img/SpectralArtifacts.png "Spectral Artifacts" | width=200)
+<img src="img/SpectralArtifacts.png" width="600">
 
 We explore the origins of these stability issues and how they manifest on problems ranging from simplified versions of common Neural Operator test cases to some of the 
 most challenging problems that neural operators are used on today. We propose an approach for restructuring FNO-type architectures so that they can learn to mitigate these issues.
 
-![FourCastNet](img/fcn.gif "FourCastNet" | width=100) ![RestructuredDFCN](img/dfcn.gif "ReDFCN" | width=100)
+<p float="left">
+  <img src="img/fcn.gif" width="250" />
+  <img src="img/dfcn.gif" width="250" /> 
+</p>
+
 
 This repository contains the code for reproducing section 3.1 and 5.1 from our paper. The main repository contains the code 
 for 5.1. 3.1 is contained in the ns_experiments folder. Due to the simplicity of the 3.1 task, the code there is likely easier

@@ -29,7 +29,7 @@ if __name__ == '__main__':
     parser.add_argument('--output_dir', default='.')
     args = parser.parse_args()
     ic_file = args.ic_file
-    output_dir = args.output_dir
+    output_dir = args.output_dir + args.ic_file.split('/')[-1].split('.')[0] 
 
     # Parameters
     Nphi = 256
@@ -37,7 +37,7 @@ if __name__ == '__main__':
     dealias = 3/2
     R = 6.37122e6 * meter
     Omega = 7.292e-5 / second
-    nu = 1e5 * meter**2 / second / 96**2 # Hyperdiffusion matched at ell=32
+    nu = 1e5 * meter**2 / second / 96**2 # Hyperdiffusion matched at ell=96
     g = 9.80616 * meter / second**2
     timestep = 60 * second
     burn_in = .5*year
@@ -65,12 +65,6 @@ if __name__ == '__main__':
     u0 = ICs[:2] * meter / second #* .3
     h0 = ICs[2] * meter
     hs0 = ICs[3] * meter
-
-    ### From experiments on removing fast initial gravity waves by repeated init/rebalancing
-    # filename = sorted(['snapshots/' + p for p in os.listdir('snapshots/')], key=lambda x: os.path.getmtime(x))[-1]
-    # with h5py.File('swe_92_1720.h5', mode='r') as file:
-    #     u0 = file['tasks']['u'][:][-1]
-    #     h0 = file['tasks']['h'][:][-1] #/ 50
 
     # Center h0 and redefine height so mountains are more impactful
     hs = dist.Field(name='hs', bases=basis)

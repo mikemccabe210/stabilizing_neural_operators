@@ -19,7 +19,7 @@ most challenging problems that neural operators are used on today. We propose an
 
 
 This repository contains the code for reproducing section 3.1 and 5.1 from our paper. The main repository contains the code 
-for 5.1. 3.1 is contained in the ns_experiments folder. **The code for 5.1 is a bit messy due to being cut out from a larger repo. Due to the simplicity of the 3.1 task, the code there is likely easier
+for 5.1. 3.1 is contained in the ns_experiments folder. **The code for 5.1 is a very messy due to being cut out from a larger multi-project repo. 3.1 is cut from a separate repo for this specific task, the code there is likely easier
 to parse for getting a better understanding of our approach.**
 
 ## Data
